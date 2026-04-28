@@ -103,6 +103,25 @@ banksafe eval cases compliance-v1 --category gdpr
 banksafe eval cases compliance-v1 --trap pii_leak
 ```
 
+## Run an Evaluation (Stage 4)
+
+The eval pipeline runs the agent against the dataset and scores every response on six dimensions: accuracy, grounding, hallucination, PII leakage, refusal appropriateness, and tone.
+
+```bash
+# Calibrate judges first (validates rubrics against hand-labeled golden set)
+banksafe eval calibrate
+
+# Run the full evaluation (32 cases × 6 judges, ~$1-3 in API credit)
+banksafe eval run
+
+# Or run a small subset for quick iteration
+banksafe eval run --limit 5
+```
+
+The output is a per-dimension score table plus a saved `evals/output/last_run.json` artifact for downstream comparison. Each dimension has a configurable fail threshold; the run exits non-zero if any dimension falls below threshold (CI-friendly).
+
+The PII judge is deterministic regex (zero-cost, fully auditable). The other five judges are LLM-based with explicit scoring rubrics, calibrated against a hand-labeled golden set in `data/calibration/golden-v1.jsonl`.
+
 ## Project Structure
 
 ```
@@ -162,7 +181,7 @@ This project itself was built using AI-assisted engineering — Claude (via Clau
 - [x] Stage 1: Foundation & scaffolding
 - [x] Stage 2: Compliance agent + mock policy tool
 - [x] Stage 3: Synthetic evaluation dataset (32 cases)
-- [ ] Stage 4: LLM-as-judge pipeline + calibration
+- [x] Stage 4: LLM-as-judge pipeline + calibration
 - [ ] Stage 5: MLflow + OTel integration
 - [ ] Stage 6: GitHub Actions CI gating
 - [ ] Stage 7: Documentation & demo polish

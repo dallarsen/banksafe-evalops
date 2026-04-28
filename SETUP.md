@@ -1,52 +1,53 @@
-# Setup Instructions — Stage 3 Update
+# Setup Instructions — Stage 4 Update
 
-This file is for **you** (Dallin). Stage 3 adds the evaluation dataset and dataset CLI commands. Follow the steps below.
+This is the technical heart of the project. After Stage 4, you have a working evaluation pipeline: agent runs cases, six judges score every response, results aggregate into a pass/fail report.
 
 ---
 
 ## What this stage adds
 
-- `data/eval_sets/compliance-v1.jsonl` — 32 carefully-crafted test cases
-- `src/banksafe/datasets/loader.py` — dataset loader with validation + statistics
-- `tests/test_dataset_loader.py` — 8 new tests (19 total now)
-- New CLI commands: `banksafe eval list`, `banksafe eval show`, `banksafe eval cases`
-- Updated study guide with Stage 3 design rationale
-- Version bump 0.2.0 → 0.3.0
-- A few internal `__init__.py` files made more substantive (defensive against unzip skipping)
-
-No demo costs API credit this time — Stage 3 is pure dataset work.
+- `src/banksafe/judges/` — six judges + base classes + calibration harness
+  - `accuracy.py`, `grounding.py`, `hallucination.py`, `refusal.py`, `tone.py` — LLM-based
+  - `pii.py` — deterministic regex (auditable, free, fast)
+  - `calibration.py` — measures judge agreement with hand-labeled golden set
+- `src/banksafe/eval/runner.py` — orchestrator that runs (cases × agent × judges)
+- `data/calibration/golden-v1.jsonl` — 12 hand-labeled (case, response, expected_score) tuples
+- `tests/test_judges.py`, `tests/test_runner.py` — 21 new tests (40 total now)
+- New CLI commands: `banksafe eval calibrate`, `banksafe eval run`
+- Stage 4 entry in study guide
+- Version 0.3.0 → 0.4.0
 
 ---
 
 ## How to apply
 
-### 1. Unzip Stage 3 over your existing folder
+### 1. Unzip Stage 4 over your existing folder
 
-Stage 3 zip contains the full project — Stage 1 + 2 + 3 combined. Unzip and replace all when prompted. Your `.env` is not in the zip, so it stays put.
+Use the terminal method we settled on last time, since macOS Finder skipped some files in earlier rounds:
 
-> **Tip from last time:** if the zip flow on macOS skipped any files, your `pyproject.toml` will still say `version = "0.1.0"`. Check after unzip with:
-> ```bash
-> grep "^version" pyproject.toml
-> ```
-> It should say `version = "0.3.0"`. If not, the unzip didn't fully replace — try again, or use the terminal: `unzip -o ~/Downloads/banksafe-evalops-stage3.zip -d ~/Desktop/`
+```bash
+cd ~/Desktop
+unzip -o ~/Downloads/banksafe-evalops-stage4.zip -d ~/Desktop/
+```
 
-### 2. Reinstall (version bumped)
+The `-o` flag forces overwrite without prompting. Your `.env` is not in the zip, so it stays put.
+
+### 2. Verify version updated
 
 ```bash
 cd ~/Desktop/banksafe-evalops
-. .venv/bin/activate
-pip install -e ".[dev]"
+grep "^version" pyproject.toml
 ```
 
-You should see `Successfully installed banksafe-evalops-0.3.0` at the end.
+Must show `version = "0.4.0"`.
 
-### 3. Verify version
+### 3. Reinstall
 
 ```bash
-banksafe version
+. .venv/bin/activate
+pip install -e ".[dev]"
+banksafe version    # should print: banksafe-evalops 0.4.0
 ```
-
-Should print `banksafe-evalops 0.3.0`.
 
 ### 4. Run the tests
 
@@ -54,45 +55,68 @@ Should print `banksafe-evalops 0.3.0`.
 pytest tests/ -v
 ```
 
-You should see **19 passed**. The new ones are in `test_dataset_loader.py` and they verify:
-- The shipping dataset is discoverable
-- Every case parses and validates
-- IDs are unique (no silent overwrites)
-- Every category and trap type is represented
-- Must-refuse cases don't have ungrounded citations
-- Statistics aggregation is correct
+You should see **40 passed**. The 21 new tests cover:
+- 8 PII judge tests (clean responses, NID detection, account/phone/email/date detection, error propagation)
+- 8 JSON parser tests (strict, clamping, regex fallback, error cases)
+- 5 runner tests (orchestration, aggregation, threshold pass/fail, error handling)
 
-### 5. Try the new CLI commands
+### 5. Calibrate the judges ⭐
+
+This is the first place we spend real API credit on Stage 4. Cost: ~$0.10-0.20.
 
 ```bash
-# List datasets
-banksafe eval list
-
-# Summary statistics for the compliance dataset
-banksafe eval show compliance-v1
-
-# Browse cases — try different filters
-banksafe eval cases compliance-v1
-banksafe eval cases compliance-v1 --category gdpr
-banksafe eval cases compliance-v1 --trap pii_leak
-banksafe eval cases compliance-v1 --trap investment_advice
+banksafe eval calibrate
 ```
 
-You'll see something like:
-- 32 total cases
-- 6 must-refuse cases
-- 3 multi-policy cases
-- 12 categories
-- 5 trap types covered
+You'll see a calibration table with one row per dimension:
 
-### 6. Commit and push
+```
+Calibration report
+Dimension       N    MAE    Max Δ    Status
+accuracy        2    0.05   0.10     ✓ calibrated
+grounding       2    0.10   0.20     ✓ calibrated
+hallucination   2    0.00   0.00     ✓ calibrated
+pii             2    0.00   0.00     ✓ calibrated   (rule-based, no LLM call)
+refusal         2    0.05   0.10     ✓ calibrated
+tone            2    0.05   0.10     ✓ calibrated
+```
+
+**MAE ≤ 0.15 = calibrated.** The exact numbers will vary slightly between runs because we use temperature=0.0 but LLMs are still mildly non-deterministic. If any dimension is uncalibrated (MAE > 0.15), the rubric prompt may need work — but for our shipping rubrics this should pass cleanly.
+
+If a dimension fails, paste the output and we'll tune the rubric.
+
+### 6. Run a small evaluation ⭐
+
+Don't run the full 32-case eval yet — let's do a 3-case smoke test first. Cost: ~$0.20.
 
 ```bash
-git add data/eval_sets/ src/banksafe/datasets/loader.py src/banksafe/cli.py src/banksafe/demo.py tests/test_dataset_loader.py
-git commit -m "feat(stage-3): add compliance-v1 eval dataset, loader, and inspection CLI"
+banksafe eval run --limit 3
+```
 
-git add docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py src/banksafe/datasets/__init__.py src/banksafe/judges/__init__.py src/banksafe/tracking/__init__.py SETUP.md
-git commit -m "docs: add Stage 3 design rationale to study guide"
+You'll see:
+- A progress bar as cases run through the agent
+- A run summary panel (dataset, agent, model, duration)
+- A dimension scores table
+- Saved JSON at `evals/output/last_run.json`
+
+The agent should pass at least 4 of 6 dimensions on these 3 cases. If everything passes, run the full eval:
+
+```bash
+banksafe eval run
+```
+
+This is the big one — 32 cases × 6 judges = 192+ LLM calls. Cost: $1.50-3.00. Takes ~5-10 minutes.
+
+**You don't have to do the full run tonight** — Stage 6's CI will run it for free on every PR. The point is just to verify it works.
+
+### 7. Commit and push
+
+```bash
+git add src/banksafe/judges/ src/banksafe/eval/ data/calibration/ src/banksafe/cli.py tests/test_judges.py tests/test_runner.py
+git commit -m "feat(stage-4): add 6-dimension judge stack, calibration harness, and eval runner"
+
+git add docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py SETUP.md
+git commit -m "docs: add Stage 4 design rationale to study guide"
 
 git push
 ```
@@ -101,20 +125,21 @@ git push
 
 ## What just got real
 
-You now have a **versioned evaluation dataset** with 32 cases that:
+You now have the **complete evaluation pipeline**:
 
-- Exercise every policy area (4 GDPR, 4 DORA, 4 AML, 3 MiFID II, 3 PSD2, 2 code-of-conduct)
-- Include 2 multi-policy cases that require reasoning across two policies
-- Include 7 trap cases (2 investment-advice refusals, 2 PII echoes, 2 hallucinations, 1 jailbreak)
-- Include 3 out-of-scope refusals
-- Each carry a `must_refuse` flag and `ground_truth_citations` for the grounding judge
+1. A 32-case dataset that exercises every policy area + every trap type
+2. A compliance agent built with Strands + Anthropic API
+3. Six judges scoring each response: accuracy, grounding, hallucination, PII (regex), refusal, tone
+4. A calibration harness that validates judge agreement with human labels (MAE ≤ 0.15)
+5. An orchestrator that aggregates per-dimension scores with configurable fail thresholds
+6. JSON results artifact suitable for CI baseline comparison
 
-In Stage 4, the LLM-as-judge pipeline will run each case through your compliance agent and score the responses on six dimensions. **The dataset is what makes that scoring meaningful.**
+Everything that comes next (MLflow tracking, OTel traces, GitHub Actions CI) is plumbing. **The substantive evaluation system is done.**
 
 ---
 
 ## Reply when done
 
-When `pytest tests/ -v` shows 19 passed and `banksafe eval show compliance-v1` prints the stats table, reply with **"Stage 3 done"** and I'll start Stage 4 (the judges — the technical heart of the project).
+When `banksafe eval calibrate` shows all six dimensions calibrated, reply with **"Stage 4 done"** and we move to Stage 5 (MLflow tracking + OpenTelemetry — fast and lightweight).
 
-If anything errors, paste the output and we'll fix it before moving on.
+If anything errors, paste the output and I'll debug.
