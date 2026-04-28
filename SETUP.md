@@ -1,122 +1,120 @@
-# Setup Instructions — Read This First
+# Setup Instructions — Stage 3 Update
 
-This file is for **you** (Dallin). It walks you through what to do after unzipping the project. Delete this file before pushing to GitHub if you want — it's just for your local setup.
-
----
-
-## Step 1: Verify your prerequisites
-
-Open a terminal in the `banksafe-evalops/` folder and check:
-
-```bash
-python --version    # should be 3.11 or higher
-git --version       # any version is fine
-```
-
-If `git --version` fails, install Git first:
-- **Mac:** `brew install git` OR download from [git-scm.com](https://git-scm.com/downloads)
-- **Windows:** Download from [git-scm.com/downloads](https://git-scm.com/downloads), accept all defaults
+This file is for **you** (Dallin). Stage 3 adds the evaluation dataset and dataset CLI commands. Follow the steps below.
 
 ---
 
-## Step 2: Set up your local Python environment
+## What this stage adds
 
-From inside the `banksafe-evalops/` folder:
+- `data/eval_sets/compliance-v1.jsonl` — 32 carefully-crafted test cases
+- `src/banksafe/datasets/loader.py` — dataset loader with validation + statistics
+- `tests/test_dataset_loader.py` — 8 new tests (19 total now)
+- New CLI commands: `banksafe eval list`, `banksafe eval show`, `banksafe eval cases`
+- Updated study guide with Stage 3 design rationale
+- Version bump 0.2.0 → 0.3.0
+- A few internal `__init__.py` files made more substantive (defensive against unzip skipping)
+
+No demo costs API credit this time — Stage 3 is pure dataset work.
+
+---
+
+## How to apply
+
+### 1. Unzip Stage 3 over your existing folder
+
+Stage 3 zip contains the full project — Stage 1 + 2 + 3 combined. Unzip and replace all when prompted. Your `.env` is not in the zip, so it stays put.
+
+> **Tip from last time:** if the zip flow on macOS skipped any files, your `pyproject.toml` will still say `version = "0.1.0"`. Check after unzip with:
+> ```bash
+> grep "^version" pyproject.toml
+> ```
+> It should say `version = "0.3.0"`. If not, the unzip didn't fully replace — try again, or use the terminal: `unzip -o ~/Downloads/banksafe-evalops-stage3.zip -d ~/Desktop/`
+
+### 2. Reinstall (version bumped)
 
 ```bash
-# Create a virtual environment
-python -m venv .venv
-
-# Activate it
-source .venv/bin/activate          # Mac/Linux
-# OR
-.venv\Scripts\activate             # Windows PowerShell
-
-# Install dependencies
+cd ~/Desktop/banksafe-evalops
+. .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-The install will take 1-3 minutes (MLflow has many dependencies).
+You should see `Successfully installed banksafe-evalops-0.3.0` at the end.
 
----
-
-## Step 3: Add your API key
+### 3. Verify version
 
 ```bash
-cp .env.example .env
+banksafe version
 ```
 
-Then open `.env` in your editor and replace `sk-ant-...` with your real Anthropic API key.
+Should print `banksafe-evalops 0.3.0`.
 
-**Verify it loads correctly:**
+### 4. Run the tests
 
 ```bash
-python -c "from banksafe.config import settings; print('Agent model:', settings.agent_model)"
+pytest tests/ -v
 ```
 
-Should print: `Agent model: claude-sonnet-4-5`
+You should see **19 passed**. The new ones are in `test_dataset_loader.py` and they verify:
+- The shipping dataset is discoverable
+- Every case parses and validates
+- IDs are unique (no silent overwrites)
+- Every category and trap type is represented
+- Must-refuse cases don't have ungrounded citations
+- Statistics aggregation is correct
 
----
-
-## Step 4: Initialize Git and create staged commits
+### 5. Try the new CLI commands
 
 ```bash
-# Configure git (skip if already done globally on this machine)
-git config --global user.name "Dallin Larsen"
-git config --global user.email "your-email@example.com"
+# List datasets
+banksafe eval list
 
-# Initialize the repo
-git init -b main
+# Summary statistics for the compliance dataset
+banksafe eval show compliance-v1
 
-# Three intentional commits — looks like real iterative work
-git add .gitignore LICENSE
-git commit -m "chore: initialize repo with gitignore and license"
-
-git add pyproject.toml .env.example src/ evals/ tests/ data/ docker/ notebooks/ configs/ .github/
-git commit -m "chore: add project scaffold, dependencies, and module structure"
-
-git add README.md docs/
-git commit -m "docs: add README, architecture overview, and study guide"
+# Browse cases — try different filters
+banksafe eval cases compliance-v1
+banksafe eval cases compliance-v1 --category gdpr
+banksafe eval cases compliance-v1 --trap pii_leak
+banksafe eval cases compliance-v1 --trap investment_advice
 ```
 
----
+You'll see something like:
+- 32 total cases
+- 6 must-refuse cases
+- 3 multi-policy cases
+- 12 categories
+- 5 trap types covered
 
-## Step 5: Push to GitHub
-
-1. Go to [github.com/new](https://github.com/new)
-2. Repository name: **`banksafe-evalops`**
-3. Description: *"CI/CD evaluation framework for agentic banking assistants"*
-4. **Public** (you want hiring managers to see it)
-5. **Do NOT** initialize with README, .gitignore, or license — we already have them
-6. Click **Create repository**
-
-Then:
+### 6. Commit and push
 
 ```bash
-git remote add origin https://github.com/dallarsen/banksafe-evalops.git
-git push -u origin main
+git add data/eval_sets/ src/banksafe/datasets/loader.py src/banksafe/cli.py src/banksafe/demo.py tests/test_dataset_loader.py
+git commit -m "feat(stage-3): add compliance-v1 eval dataset, loader, and inspection CLI"
+
+git add docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py src/banksafe/datasets/__init__.py src/banksafe/judges/__init__.py src/banksafe/tracking/__init__.py SETUP.md
+git commit -m "docs: add Stage 3 design rationale to study guide"
+
+git push
 ```
 
-If GitHub asks for authentication:
-- Easiest path: install the GitHub CLI (`gh`) and run `gh auth login`
-- Alternative: create a Personal Access Token at github.com/settings/tokens and use it as your password
+---
+
+## What just got real
+
+You now have a **versioned evaluation dataset** with 32 cases that:
+
+- Exercise every policy area (4 GDPR, 4 DORA, 4 AML, 3 MiFID II, 3 PSD2, 2 code-of-conduct)
+- Include 2 multi-policy cases that require reasoning across two policies
+- Include 7 trap cases (2 investment-advice refusals, 2 PII echoes, 2 hallucinations, 1 jailbreak)
+- Include 3 out-of-scope refusals
+- Each carry a `must_refuse` flag and `ground_truth_citations` for the grounding judge
+
+In Stage 4, the LLM-as-judge pipeline will run each case through your compliance agent and score the responses on six dimensions. **The dataset is what makes that scoring meaningful.**
 
 ---
 
-## Step 6: Confirm everything's good
+## Reply when done
 
-After pushing, visit `https://github.com/dallarsen/banksafe-evalops` in your browser. You should see:
-- The README rendered with the architecture diagram
-- 3 commits in the history
-- All the folders and files
+When `pytest tests/ -v` shows 19 passed and `banksafe eval show compliance-v1` prints the stats table, reply with **"Stage 3 done"** and I'll start Stage 4 (the judges — the technical heart of the project).
 
-That's Stage 1 complete. Reply to me with "Stage 1 done" and we'll move to Stage 2 (the compliance agent + mock policy tool).
-
----
-
-## If anything goes wrong
-
-Tell me exactly what error you see and I'll debug it. Common issues:
-- **`strands-agents` install fails:** This package may not exist on PyPI under that name. We'll switch to a fallback in Stage 2.
-- **`pip install -e` permission denied:** You forgot to activate `.venv` — run the activate command again.
-- **`git push` rejected:** Your repo on GitHub already has commits. Either delete and recreate, or run `git push -u origin main --force` if you're sure.
+If anything errors, paste the output and we'll fix it before moving on.

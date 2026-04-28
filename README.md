@@ -4,6 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Built with Claude](https://img.shields.io/badge/Built_with-Claude-orange.svg)](https://www.anthropic.com/claude)
 
 ---
 
@@ -29,7 +30,7 @@ A reusable evaluation platform that:
 4. **Integrates with GitHub Actions** to automatically detect regressions on every pull request, comment results inline, and *block merges* when critical thresholds are breached
 5. **Emits OpenTelemetry traces** for end-to-end observability into agent and judge behavior
 
-The reference implementation evaluates an **Internal Compliance Assistant** — an agent that answers DNB-internal questions about Norwegian banking regulations, GDPR, and DORA. The framework is designed to extend to other agent types (customer support, loan guidance, fraud triage) by adding a config and a dataset.
+The reference implementation evaluates an **Internal Compliance Assistant** — a Strands-based agent that answers DNB-internal questions about Norwegian banking regulations (GDPR, DORA, AML, MiFID II, PSD2) using a mock policy retrieval tool. The framework is designed to extend to other agent types (customer support, loan guidance, fraud triage) by adding a config and a dataset.
 
 ## Architecture
 
@@ -67,7 +68,39 @@ cp .env.example .env
 # Edit .env and add your ANTHROPIC_API_KEY
 
 # Run a sample evaluation (after Stage 4)
-banksafe eval run --dataset compliance-v1
+banksafe agent demo
+```
+
+## Try the Compliance Agent (Stage 2)
+
+After installing, run the bundled demo to see the agent answer three sample queries:
+
+```bash
+banksafe agent demo
+```
+
+Or ask your own:
+
+```bash
+banksafe agent ask "What is DNB's deadline for reporting a major ICT incident under DORA?"
+```
+
+The agent will retrieve relevant policies via the `policy_lookup` tool, cite policy IDs in its answer, decline out-of-scope or investment-advice questions, and return a structured response capturing the full tool trajectory.
+
+## Browse the Evaluation Dataset (Stage 3)
+
+The `compliance-v1` dataset contains 32 carefully-crafted test cases covering every policy area, multi-policy scenarios, and traps for each judge dimension (PII leak, hallucination, investment advice, jailbreak, out-of-scope).
+
+```bash
+# List datasets
+banksafe eval list
+
+# Summary statistics
+banksafe eval show compliance-v1
+
+# Browse cases (filter by category or trap type)
+banksafe eval cases compliance-v1 --category gdpr
+banksafe eval cases compliance-v1 --trap pii_leak
 ```
 
 ## Project Structure
@@ -75,17 +108,18 @@ banksafe eval run --dataset compliance-v1
 ```
 banksafe-evalops/
 ├── src/banksafe/
-│   ├── agents/          # Strands-based banking agents
+│   ├── agents/          # Strands-based banking agents + base interface
 │   ├── tools/           # Mock internal tools (policy lookup, etc.)
-│   ├── judges/          # LLM-as-judge evaluators
-│   ├── datasets/        # Eval dataset loaders & schema
-│   └── tracking/        # MLflow + OTel integration
+│   ├── judges/          # LLM-as-judge evaluators (Stage 4)
+│   ├── datasets/        # Eval dataset loaders & shared schema
+│   ├── tracking/        # MLflow + OTel integration (Stage 5)
+│   └── cli.py           # banksafe command-line entry point
 ├── data/
-│   ├── policies/        # Synthetic regulatory documents
-│   └── eval_sets/       # Versioned evaluation datasets
-├── evals/               # Eval runner & CI entry points
-├── docker/              # MLflow + OTel collector compose
-├── .github/workflows/   # CI/CD evaluation pipeline
+│   ├── policies/        # Synthetic regulatory documents (GDPR, DORA, AML, …)
+│   └── eval_sets/       # Versioned evaluation datasets (Stage 3)
+├── evals/               # Eval runner & demo scripts
+├── docker/              # MLflow + OTel collector compose (Stage 5)
+├── .github/workflows/   # CI/CD evaluation pipeline (Stage 6)
 ├── docs/                # Architecture, extension guide, study guide
 └── tests/
 ```
@@ -106,7 +140,7 @@ banksafe-evalops/
 
 The framework is intentionally generic. To evaluate a new agent (e.g., Loan Guidance):
 
-1. Add agent definition under `src/banksafe/agents/`
+1. Add agent definition under `src/banksafe/agents/` (subclass `BaseAgent`)
 2. Add eval dataset under `data/eval_sets/loan-guidance-v1.jsonl`
 3. Define dimension weights in `configs/loan-guidance.yaml`
 4. Register the agent in the eval runner
@@ -117,7 +151,7 @@ See [`docs/extending.md`](docs/extending.md) for a full walkthrough.
 
 **Python · Strands · Anthropic API · MLflow · OpenTelemetry · Docker · GitHub Actions · Pydantic**
 
-Designed to be portable to AWS Bedrock + AgentCore by swapping the model provider in `src/banksafe/agents/` (the agent and judge interfaces are provider-agnostic).
+Designed to be portable to AWS Bedrock + AgentCore by swapping the model provider in `src/banksafe/agents/` (the `BaseAgent` interface is provider-agnostic).
 
 ## Built with AI-First Engineering
 
@@ -126,8 +160,8 @@ This project itself was built using AI-assisted engineering — Claude (via Clau
 ## Status & Roadmap
 
 - [x] Stage 1: Foundation & scaffolding
-- [ ] Stage 2: Compliance agent + mock policy tool
-- [ ] Stage 3: Synthetic evaluation dataset
+- [x] Stage 2: Compliance agent + mock policy tool
+- [x] Stage 3: Synthetic evaluation dataset (32 cases)
 - [ ] Stage 4: LLM-as-judge pipeline + calibration
 - [ ] Stage 5: MLflow + OTel integration
 - [ ] Stage 6: GitHub Actions CI gating

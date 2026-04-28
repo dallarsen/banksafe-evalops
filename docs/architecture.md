@@ -13,7 +13,9 @@ BankSafe EvalOps is structured as a **layered evaluation platform** with four lo
 
 The reference SUT is a **Compliance Assistant** built with Strands. It exposes a single `answer(query: str) -> AgentResponse` interface so the eval harness is agnostic to the agent's internals.
 
-The agent has access to one mock tool (`policy_lookup`) that simulates retrieval from an internal regulation database. This is intentionally minimal — the framework's value is in the *evaluation*, not the agent.
+The agent has access to two mock tools (`policy_lookup`, `list_policies`) that simulate retrieval against an internal regulation database. Retrieval is intentionally deterministic (keyword-routed, not vector) so eval regressions can be cleanly attributed to the agent or judge layer rather than a flaky retriever.
+
+The framework supports any agent that subclasses `BaseAgent`. Adding a new agent type does not require any changes to the harness, judges, or tracking.
 
 ## Layer 2: Evaluation Harness
 

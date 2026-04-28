@@ -1,6 +1,6 @@
 [project]
 name = "banksafe-evalops"
-version = "0.2.0"
+version = "0.3.0"
 description = "CI/CD evaluation framework for agentic banking assistants — LLM-as-judge pipelines, regression detection, and compliance gating."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,16 +9,22 @@ authors = [{ name = "Dallin Larsen" }]
 keywords = ["llm", "evaluation", "agents", "banking", "compliance", "mlops"]
 
 dependencies = [
+    # LLM clients
     "anthropic>=0.40.0",
+    # Agent framework (in JD tech stack) — anthropic extra includes the AnthropicModel provider
     "strands-agents[anthropic]>=1.0.0",
+    # Experiment tracking
     "mlflow>=2.18.0",
+    # Observability
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp>=1.27.0",
+    # Config & data
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "pyyaml>=6.0.2",
     "python-dotenv>=1.0.1",
+    # CLI / output
     "rich>=13.9.0",
     "typer>=0.13.0",
 ]
