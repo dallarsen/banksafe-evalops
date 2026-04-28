@@ -1,22 +1,13 @@
-"""Command-line interface for BankSafe EvalOps.
-
-Available subcommands grow per stage:
-
-    banksafe agent ask "<query>"        # ask the compliance agent
-    banksafe agent demo                 # run the sample queries
-    banksafe eval list                  # list available datasets
-    banksafe eval show <dataset>        # summary stats for a dataset
-    banksafe eval cases <dataset>       # browse test cases
-
-Stage 4+ will add:
-    banksafe eval run --dataset <name>
-    banksafe eval calibrate
-"""
+"""Command-line interface for BankSafe EvalOps."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 app = typer.Typer(
@@ -31,7 +22,7 @@ agent_app = typer.Typer(
 )
 eval_app = typer.Typer(
     name="eval",
-    help="Inspect and (later) run evaluations.",
+    help="Inspect, run, and calibrate evaluations.",
     no_args_is_help=True,
 )
 app.add_typer(agent_app)
@@ -67,7 +58,7 @@ def agent_demo() -> None:
 
 
 # ---------------------------------------------------------------------------
-# eval commands (Stage 3: dataset inspection only)
+# eval — dataset inspection
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +71,6 @@ def eval_list() -> None:
     if not names:
         console.print("[yellow]No evaluation datasets found in data/eval_sets/[/yellow]")
         raise typer.Exit(code=1)
-
     console.print("[bold]Available evaluation datasets:[/bold]")
     for name in names:
         console.print(f"  - {name}")
@@ -88,7 +78,7 @@ def eval_list() -> None:
 
 @eval_app.command("show")
 def eval_show(
-    dataset: str = typer.Argument(..., help="Dataset name (without .jsonl), e.g. 'compliance-v1'.")
+    dataset: str = typer.Argument(..., help="Dataset name (without .jsonl).")
 ) -> None:
     """Print summary statistics for an evaluation dataset."""
     from banksafe.datasets import summarize_dataset
@@ -143,17 +133,162 @@ def eval_cases(
 
     for case in cases[:limit]:
         refuse_marker = "[green]Y[/green]" if case.must_refuse else ""
-        table.add_row(
-            case.id,
-            case.category,
-            case.trap_type or "",
-            refuse_marker,
-            case.input,
-        )
+        table.add_row(case.id, case.category, case.trap_type or "", refuse_marker, case.input)
 
     console.print(table)
     if len(cases) > limit:
         console.print(f"[dim]Showing {limit} of {len(cases)}. Use --limit to see more.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# eval — run + calibrate (Stage 4)
+# ---------------------------------------------------------------------------
+
+
+@eval_app.command("run")
+def eval_run(
+    dataset: str = typer.Option("compliance-v1", "--dataset", "-d", help="Dataset to evaluate."),
+    limit: int | None = typer.Option(
+        None, "--limit", "-n", help="Run only the first N cases (cost control)."
+    ),
+    output: Path = typer.Option(
+        Path("evals/output/last_run.json"),
+        "--output",
+        "-o",
+        help="Where to save the full RunResult JSON.",
+    ),
+) -> None:
+    """Run the full evaluation pipeline and report dimension scores."""
+    from banksafe.agents import ComplianceAgent
+    from banksafe.datasets import load_dataset
+    from banksafe.eval import run_evaluation, save_run_result
+
+    cases = load_dataset(dataset)
+    if limit is not None:
+        cases = cases[:limit]
+    console.print(
+        f"[bold]Running evaluation:[/bold] {len(cases)} cases × 6 judges. "
+        "This may take several minutes and incur API costs."
+    )
+
+    agent = ComplianceAgent()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Evaluating…", total=len(cases))
+
+        def _cb(idx: int, total: int, case) -> None:
+            progress.update(
+                task, description=f"[{idx + 1}/{total}] {case.id} ({case.category})"
+            )
+            progress.advance(task)
+
+        result = run_evaluation(cases, agent, dataset_name=dataset, progress_callback=_cb)
+
+    save_run_result(result, output)
+
+    _render_run_result(result)
+    console.print(f"\n[dim]Full results saved to {output}[/dim]")
+    if not result.overall_passed:
+        raise typer.Exit(code=1)
+
+
+@eval_app.command("calibrate")
+def eval_calibrate(
+    golden_set: str = typer.Option("golden-v1", "--golden", "-g", help="Golden set name."),
+) -> None:
+    """Calibrate judges against the hand-labeled golden set."""
+    from banksafe.judges.calibration import run_calibration
+
+    console.print(f"[bold]Calibrating against {golden_set}…[/bold]")
+    reports = run_calibration(name=golden_set)
+
+    table = Table(title="Calibration report", show_lines=True)
+    table.add_column("Dimension", style="cyan")
+    table.add_column("N", justify="right")
+    table.add_column("MAE", justify="right")
+    table.add_column("Max Δ", justify="right")
+    table.add_column("Status", justify="center")
+
+    any_uncalibrated = False
+    for dim in ("accuracy", "grounding", "hallucination", "pii", "refusal", "tone"):
+        report = reports.get(dim)
+        if not report:
+            table.add_row(dim, "-", "-", "-", "[dim](no samples)[/dim]")
+            continue
+        status = "[green]✓ calibrated[/green]" if report.calibrated else "[red]✗ uncalibrated[/red]"
+        if not report.calibrated:
+            any_uncalibrated = True
+        table.add_row(
+            dim,
+            str(report.sample_count),
+            f"{report.mean_absolute_error:.3f}",
+            f"{report.max_delta:.3f}",
+            status,
+        )
+
+    console.print(table)
+
+    # Show worst-case disagreements per dimension
+    for dim, report in reports.items():
+        worst = sorted(report.deltas, key=lambda d: -abs(d.delta))[:1]
+        for d in worst:
+            if abs(d.delta) > 0.001:
+                console.print(
+                    f"\n[yellow]worst {dim}:[/yellow] {d.case_id} "
+                    f"expected={d.expected:.2f}, actual={d.actual:.2f} "
+                    f"(Δ={d.delta:+.2f})"
+                )
+                if d.rationale:
+                    console.print(f"  [dim]judge said:[/dim] {d.rationale[:200]}")
+
+    if any_uncalibrated:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_run_result(result) -> None:
+    """Pretty-print a RunResult to the console."""
+    console.print(
+        Panel.fit(
+            f"Dataset: [cyan]{result.dataset}[/cyan]   "
+            f"Agent: [cyan]{result.agent_name}[/cyan]   "
+            f"Model: [cyan]{result.agent_model}[/cyan]\n"
+            f"Cases: {result.case_count}   Duration: {result.duration_s:.1f}s",
+            title="Run Summary",
+        )
+    )
+
+    table = Table(title="Dimension scores", show_lines=False)
+    table.add_column("Dimension", style="cyan")
+    table.add_column("Mean", justify="right")
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Threshold", justify="right")
+    table.add_column("Status", justify="center")
+
+    for s in result.dimension_summaries:
+        status = "[green]PASS[/green]" if s.passed else "[red]FAIL[/red]"
+        table.add_row(
+            s.dimension,
+            f"{s.mean_score:.3f}",
+            f"{s.min_score:.3f}",
+            f"{s.max_score:.3f}",
+            f"{s.fail_threshold:.2f}",
+            status,
+        )
+    console.print(table)
+
+    overall = "[green]PASSED[/green]" if result.overall_passed else "[red]FAILED[/red]"
+    console.print(f"[bold]Overall:[/bold] {overall}")
 
 
 # ---------------------------------------------------------------------------

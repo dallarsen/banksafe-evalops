@@ -65,8 +65,7 @@ def test_extract_tool_calls_pairs_use_with_result() -> None:
             ],
         },
     ]
-    result = SimpleNamespace(messages=messages)
-    calls = _extract_tool_calls(result)
+    calls = _extract_tool_calls(messages)
     assert len(calls) == 1
     assert calls[0].name == "policy_lookup"
     assert calls[0].input == {"query": "DORA incident reporting"}
@@ -74,8 +73,7 @@ def test_extract_tool_calls_pairs_use_with_result() -> None:
 
 
 def test_extract_tool_calls_handles_no_messages() -> None:
-    result = SimpleNamespace()
-    assert _extract_tool_calls(result) == []
+    assert _extract_tool_calls([]) == []
 
 
 def test_extract_usage_from_metrics() -> None:

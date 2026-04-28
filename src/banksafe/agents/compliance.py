@@ -98,6 +98,9 @@ class ComplianceAgent(BaseAgent):
 
     def answer(self, query: str) -> AgentResponse:
         """Run one turn against the agent and capture the trajectory."""
+        # Snapshot conversation length BEFORE the call so we can extract
+        # only THIS turn's tool calls (not history from previous turns).
+        history_before = list(getattr(self._agent, "messages", []) or [])
         start = time.perf_counter()
         try:
             result = self._agent(query)
@@ -111,9 +114,12 @@ class ComplianceAgent(BaseAgent):
             )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
+        history_after = list(getattr(self._agent, "messages", []) or [])
+        new_messages = history_after[len(history_before):]
+
         return AgentResponse(
             output_text=_extract_text(result),
-            tool_calls=_extract_tool_calls(result),
+            tool_calls=_extract_tool_calls(new_messages),
             latency_ms=elapsed_ms,
             usage=_extract_usage(result),
             model=self.model_id,
@@ -154,14 +160,17 @@ def _extract_text(result: object) -> str:
     return str(result).strip()
 
 
-def _extract_tool_calls(result: object) -> list[ToolCall]:
-    """Pull tool invocations out of the agent's message trace.
+def _extract_tool_calls(messages: object) -> list[ToolCall]:
+    """Pull tool invocations out of a list of Strands conversation messages.
 
-    Strands stores per-turn messages on the result; tool uses appear as
-    content blocks of type 'toolUse', and tool results as 'toolResult'.
+    Each message has a `content` list. Tool uses appear as blocks with
+    keys `toolUse` (Strands canonical) or `type: "tool_use"` (Anthropic
+    canonical). Tool results appear as `toolResult` or `type: "tool_result"`.
     """
     calls: list[ToolCall] = []
-    messages = getattr(result, "messages", None) or []
+    if not isinstance(messages, list):
+        # Backwards compatibility: someone passed an AgentResult.
+        messages = list(getattr(messages, "messages", []) or [])
 
     # Build an index of tool_use_id -> textual output for matching.
     tool_outputs: dict[str, str] = {}
@@ -172,18 +181,36 @@ def _extract_tool_calls(result: object) -> list[ToolCall]:
         for block in content:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "toolResult":
-                tool_use_id = block.get("toolUseId") or block.get("tool_use_id") or ""
-                output_blocks = block.get("content", [])
-                if isinstance(output_blocks, list):
+            # Strands shape: {"toolResult": {"toolUseId": ..., "content": [...]}}
+            tr = block.get("toolResult")
+            if isinstance(tr, dict):
+                tool_use_id = tr.get("toolUseId") or tr.get("tool_use_id") or ""
+                inner = tr.get("content", [])
+                if isinstance(inner, list):
                     text_pieces = [
                         b.get("text", "")
-                        for b in output_blocks
+                        for b in inner
                         if isinstance(b, dict)
                     ]
                     tool_outputs[tool_use_id] = "".join(text_pieces)
-                elif isinstance(output_blocks, str):
-                    tool_outputs[tool_use_id] = output_blocks
+                elif isinstance(inner, str):
+                    tool_outputs[tool_use_id] = inner
+                continue
+            # Anthropic-canonical shape: {"type": "tool_result", "tool_use_id": ..., "content": ...}
+            if block.get("type") in ("tool_result", "toolResult"):
+                tool_use_id = (
+                    block.get("toolUseId") or block.get("tool_use_id") or ""
+                )
+                inner = block.get("content", "")
+                if isinstance(inner, list):
+                    text_pieces = [
+                        b.get("text", "")
+                        for b in inner
+                        if isinstance(b, dict)
+                    ]
+                    tool_outputs[tool_use_id] = "".join(text_pieces)
+                elif isinstance(inner, str):
+                    tool_outputs[tool_use_id] = inner
 
     # Now walk again to capture tool_use blocks in order.
     for msg in messages:
@@ -193,8 +220,21 @@ def _extract_tool_calls(result: object) -> list[ToolCall]:
         for block in content:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "toolUse":
-                tool_use_id = block.get("toolUseId") or block.get("id") or ""
+            # Strands shape: {"toolUse": {"toolUseId": ..., "name": ..., "input": ...}}
+            tu = block.get("toolUse")
+            if isinstance(tu, dict):
+                tool_use_id = tu.get("toolUseId") or tu.get("id") or ""
+                calls.append(
+                    ToolCall(
+                        name=tu.get("name", "unknown"),
+                        input=tu.get("input", {}) or {},
+                        output=tool_outputs.get(tool_use_id, ""),
+                    )
+                )
+                continue
+            # Anthropic-canonical shape: {"type": "tool_use", "id": ..., "name": ..., "input": ...}
+            if block.get("type") in ("tool_use", "toolUse"):
+                tool_use_id = block.get("id") or block.get("toolUseId") or ""
                 calls.append(
                     ToolCall(
                         name=block.get("name", "unknown"),
