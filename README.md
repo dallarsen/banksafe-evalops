@@ -4,7 +4,6 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Built with Claude](https://img.shields.io/badge/Built_with-Claude-orange.svg)](https://www.anthropic.com/claude)
 
 ---
 
