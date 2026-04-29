@@ -1,6 +1,6 @@
 [project]
 name = "banksafe-evalops"
-version = "0.4.0"
+version = "0.6.0"
 description = "CI/CD evaluation framework for agentic banking assistants — LLM-as-judge pipelines, regression detection, and compliance gating."
 readme = "README.md"
 requires-python = ">=3.11"

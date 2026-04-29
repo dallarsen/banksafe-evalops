@@ -1,145 +1,177 @@
-# Setup Instructions — Stage 4 Update
+# Setup Instructions — Stage 6 Update
 
-This is the technical heart of the project. After Stage 4, you have a working evaluation pipeline: agent runs cases, six judges score every response, results aggregate into a pass/fail report.
+This is the showpiece stage. **GitHub Actions CI** that runs your eval pipeline on every PR, compares scores against a committed baseline, posts a results table as a PR comment, and blocks merges when regressions are detected.
+
+This is the single most impressive piece for the email to hiring managers. It turns "I built an eval framework" into "I built an EvalOps framework that gates production deployments."
 
 ---
 
 ## What this stage adds
 
-- `src/banksafe/judges/` — six judges + base classes + calibration harness
-  - `accuracy.py`, `grounding.py`, `hallucination.py`, `refusal.py`, `tone.py` — LLM-based
-  - `pii.py` — deterministic regex (auditable, free, fast)
-  - `calibration.py` — measures judge agreement with hand-labeled golden set
-- `src/banksafe/eval/runner.py` — orchestrator that runs (cases × agent × judges)
-- `data/calibration/golden-v1.jsonl` — 12 hand-labeled (case, response, expected_score) tuples
-- `tests/test_judges.py`, `tests/test_runner.py` — 21 new tests (40 total now)
-- New CLI commands: `banksafe eval calibrate`, `banksafe eval run`
-- Stage 4 entry in study guide
-- Version 0.3.0 → 0.4.0
+- `src/banksafe/eval/regression.py` — comparison engine producing structured `RegressionReport`s
+- `src/banksafe/agents/stub.py` — deterministic stub agent for cheap CI
+- `evals/baseline/main-baseline.json` — synthetic baseline for the regression check
+- `.github/workflows/tests.yml` — fast CI (every push, free)
+- `.github/workflows/live-eval.yml` — full-eval CI (manual or `run-eval` label, ~$2/run)
+- New CLI command: `banksafe eval compare`
+- 7 new tests (47 total now)
+- Stage 6 entry in study guide
+- Version bump 0.4.0 → 0.6.0 (we're skipping 0.5 since Stage 5 was deferred)
 
 ---
 
 ## How to apply
 
-### 1. Unzip Stage 4 over your existing folder
-
-Use the terminal method we settled on last time, since macOS Finder skipped some files in earlier rounds:
+### 1. Unzip Stage 6 over your existing folder
 
 ```bash
 cd ~/Desktop
-unzip -o ~/Downloads/banksafe-evalops-stage4.zip -d ~/Desktop/
+unzip -o ~/Downloads/banksafe-evalops-stage6.zip -d ~/Desktop/
 ```
 
-The `-o` flag forces overwrite without prompting. Your `.env` is not in the zip, so it stays put.
-
-### 2. Verify version updated
+### 2. Verify version
 
 ```bash
 cd ~/Desktop/banksafe-evalops
 grep "^version" pyproject.toml
 ```
 
-Must show `version = "0.4.0"`.
+Must show `version = "0.6.0"`.
 
 ### 3. Reinstall
 
 ```bash
 . .venv/bin/activate
 pip install -e ".[dev]"
-banksafe version    # should print: banksafe-evalops 0.4.0
+banksafe version
 ```
+
+Should print `banksafe-evalops 0.6.0`.
 
 ### 4. Run the tests
 
 ```bash
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
 
-You should see **40 passed**. The 21 new tests cover:
-- 8 PII judge tests (clean responses, NID detection, account/phone/email/date detection, error propagation)
-- 8 JSON parser tests (strict, clamping, regex fallback, error cases)
-- 5 runner tests (orchestration, aggregation, threshold pass/fail, error handling)
+You should see **47 passed**. Seven new tests verify the regression-comparison engine and PR-comment renderer.
 
-### 5. Calibrate the judges ⭐
-
-This is the first place we spend real API credit on Stage 4. Cost: ~$0.10-0.20.
+### 5. Try the new `banksafe eval compare` command locally ⭐
 
 ```bash
-banksafe eval calibrate
+# Simulate what CI does — copy the baseline as if it were the current run
+mkdir -p evals/output
+cp evals/baseline/main-baseline.json evals/output/last_run.json
+
+# Compare current vs baseline (should be all flat, exit code 0)
+banksafe eval compare
 ```
 
-You'll see a calibration table with one row per dimension:
+You should see a comparison table with all dimensions showing `+0.000` and "No regressions detected." Exit code is 0.
 
-```
-Calibration report
-Dimension       N    MAE    Max Δ    Status
-accuracy        2    0.05   0.10     ✓ calibrated
-grounding       2    0.10   0.20     ✓ calibrated
-hallucination   2    0.00   0.00     ✓ calibrated
-pii             2    0.00   0.00     ✓ calibrated   (rule-based, no LLM call)
-refusal         2    0.05   0.10     ✓ calibrated
-tone            2    0.05   0.10     ✓ calibrated
-```
-
-**MAE ≤ 0.15 = calibrated.** The exact numbers will vary slightly between runs because we use temperature=0.0 but LLMs are still mildly non-deterministic. If any dimension is uncalibrated (MAE > 0.15), the rubric prompt may need work — but for our shipping rubrics this should pass cleanly.
-
-If a dimension fails, paste the output and we'll tune the rubric.
-
-### 6. Run a small evaluation ⭐
-
-Don't run the full 32-case eval yet — let's do a 3-case smoke test first. Cost: ~$0.20.
+Now simulate a regression — drop the accuracy score:
 
 ```bash
-banksafe eval run --limit 3
+python -c "
+import json
+data = json.load(open('evals/output/last_run.json'))
+for s in data['dimension_summaries']:
+    if s['dimension'] == 'accuracy':
+        s['mean_score'] = 0.65
+        s['passed'] = False
+data['overall_passed'] = False
+json.dump(data, open('evals/output/last_run.json', 'w'), indent=2)
+"
+
+banksafe eval compare
+echo "exit code: $?"
 ```
 
-You'll see:
-- A progress bar as cases run through the agent
-- A run summary panel (dataset, agent, model, duration)
-- A dimension scores table
-- Saved JSON at `evals/output/last_run.json`
+You should see `accuracy` flagged as `REGRESSION` with `Δ = -0.270`, and exit code 1. **This is exactly what CI uses to block the merge.**
 
-The agent should pass at least 4 of 6 dimensions on these 3 cases. If everything passes, run the full eval:
+Restore the baseline before continuing:
 
 ```bash
-banksafe eval run
+cp evals/baseline/main-baseline.json evals/output/last_run.json
 ```
 
-This is the big one — 32 cases × 6 judges = 192+ LLM calls. Cost: $1.50-3.00. Takes ~5-10 minutes.
+### 6. Add your Anthropic API key as a GitHub Secret ⭐
 
-**You don't have to do the full run tonight** — Stage 6's CI will run it for free on every PR. The point is just to verify it works.
+This is required for the `live-eval.yml` workflow to actually run.
+
+1. Go to https://github.com/dallarsen/banksafe-evalops/settings/secrets/actions
+2. Click **"New repository secret"**
+3. **Name:** `ANTHROPIC_API_KEY`
+4. **Secret:** paste your real Anthropic API key (the same one in your `.env`)
+5. Click **"Add secret"**
+
+You'll see the secret listed but its value is hidden — that's correct.
 
 ### 7. Commit and push
 
 ```bash
-git add src/banksafe/judges/ src/banksafe/eval/ data/calibration/ src/banksafe/cli.py tests/test_judges.py tests/test_runner.py
-git commit -m "feat(stage-4): add 6-dimension judge stack, calibration harness, and eval runner"
+git add src/banksafe/eval/regression.py src/banksafe/agents/stub.py src/banksafe/agents/__init__.py src/banksafe/cli.py src/banksafe/eval/__init__.py src/banksafe/eval/runner.py evals/baseline/ tests/test_regression.py
+git commit -m "feat(stage-6): add regression-comparison engine and CI workflows"
 
-git add docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py SETUP.md
-git commit -m "docs: add Stage 4 design rationale to study guide"
+git add .github/workflows/tests.yml .github/workflows/live-eval.yml docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py SETUP.md
+git commit -m "ci: add tests + live-eval workflows with PR-comment regression gating"
 
 git push
 ```
+
+### 8. Watch CI run ⭐
+
+Open https://github.com/dallarsen/banksafe-evalops/actions
+
+You should see **"Tests & fast checks"** run on your push. It should complete in under 2 minutes with a green checkmark. **Take a screenshot of this** — green CI on a project with judges, calibration, and regression detection is the screenshot that goes in your hiring-manager email.
+
+### 9. (Optional) Trigger the live eval ⭐
+
+If you want to see the full thing in action — the live-eval workflow running the real evaluation against the real Anthropic API and posting a comment to a PR:
+
+1. Create a new branch with a small change:
+   ```bash
+   git checkout -b demo-pr
+   echo "" >> README.md
+   git add README.md
+   git commit -m "demo: trigger live eval"
+   git push -u origin demo-pr
+   ```
+2. Open https://github.com/dallarsen/banksafe-evalops/pulls and create a PR from `demo-pr` to `main`
+3. Add the label `run-eval` to the PR
+4. Wait ~5-10 minutes
+5. The workflow runs, posts a comment with the full regression table
+
+This costs ~$2 of API credit. **The PR comment that lands is the second key screenshot for your email.** Once it's done, close the PR without merging (it was just a demo).
 
 ---
 
 ## What just got real
 
-You now have the **complete evaluation pipeline**:
+You now have **production-grade CI gating** for an LLM-based system:
 
-1. A 32-case dataset that exercises every policy area + every trap type
-2. A compliance agent built with Strands + Anthropic API
-3. Six judges scoring each response: accuracy, grounding, hallucination, PII (regex), refusal, tone
-4. A calibration harness that validates judge agreement with human labels (MAE ≤ 0.15)
-5. An orchestrator that aggregates per-dimension scores with configurable fail thresholds
-6. JSON results artifact suitable for CI baseline comparison
+- Every push runs unit tests + a self-check of the regression engine (free, fast)
+- PRs labeled `run-eval` get a full live evaluation with PR comment
+- Regressions beyond 5pp on any dimension automatically block merges
+- The baseline is version-controlled so updates require deliberate review
 
-Everything that comes next (MLflow tracking, OTel traces, GitHub Actions CI) is plumbing. **The substantive evaluation system is done.**
+The framework is now genuinely an *EvalOps* system, not just an evaluation library.
 
 ---
 
 ## Reply when done
 
-When `banksafe eval calibrate` shows all six dimensions calibrated, reply with **"Stage 4 done"** and we move to Stage 5 (MLflow tracking + OpenTelemetry — fast and lightweight).
+Reply with:
+- **"Stage 6 done"** + (ideally) screenshots of green CI and any PR comment → final stage (Stage 7: polish + Medium article + email draft)
+- **"CI failed: [paste the actions log]"** → I'll debug
 
-If anything errors, paste the output and I'll debug.
+If you want to stop here and ship the email tomorrow, what you have right now is genuinely impressive:
+- Working compliance agent
+- 32-case eval dataset
+- 6 calibrated judges
+- 47 tests passing
+- CI/CD with regression gating
+- ~$3-5 of API credit spent
+- Demonstrated and documented
+
+That's a portfolio piece. Stage 7 just makes it shine.

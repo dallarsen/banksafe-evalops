@@ -122,6 +122,32 @@ The output is a per-dimension score table plus a saved `evals/output/last_run.js
 
 The PII judge is deterministic regex (zero-cost, fully auditable). The other five judges are LLM-based with explicit scoring rubrics, calibrated against a hand-labeled golden set in `data/calibration/golden-v1.jsonl`.
 
+## Detect Regressions in CI (Stage 6)
+
+Every PR runs the test suite and a regression-engine smoke check. PRs labeled `run-eval` (or runs triggered manually from the Actions tab) execute the full evaluation against the real Anthropic API, compare scores against a committed baseline, and post a results table to the PR — blocking merge if any dimension regresses by more than a configurable threshold (default 5pp).
+
+Locally, you can simulate exactly what CI does:
+
+```bash
+# Run the eval (this is what live-eval.yml does in CI)
+banksafe eval run
+
+# Compare to the baseline (this is the gating step)
+banksafe eval compare \
+  --current evals/output/last_run.json \
+  --baseline evals/baseline/main-baseline.json \
+  --pr-comment evals/output/pr-comment.md
+```
+
+Exit code 0 = no regressions. Exit code 1 = at least one dimension dropped below tolerance. The `--pr-comment` flag emits Markdown identical to what gets posted to the PR conversation.
+
+The repo ships two GitHub Actions workflows:
+
+| Workflow | When it runs | Cost | What it does |
+|---|---|---|---|
+| `tests.yml` | Every push and PR | Free | Unit tests + regression-engine self-check |
+| `live-eval.yml` | Manual or `run-eval` label | ~$1-3/run | Full live eval, PR comment, merge gating |
+
 ## Project Structure
 
 ```
@@ -182,8 +208,8 @@ This project itself was built using AI-assisted engineering — Claude (via Clau
 - [x] Stage 2: Compliance agent + mock policy tool
 - [x] Stage 3: Synthetic evaluation dataset (32 cases)
 - [x] Stage 4: LLM-as-judge pipeline + calibration
-- [ ] Stage 5: MLflow + OTel integration
-- [ ] Stage 6: GitHub Actions CI gating
+- [ ] Stage 5: MLflow + OTel integration *(deferred — framework runs without it)*
+- [x] Stage 6: GitHub Actions CI gating
 - [ ] Stage 7: Documentation & demo polish
 
 ## License

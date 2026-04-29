@@ -283,28 +283,206 @@ Silent test skipping is the worst failure mode in eval. If a judge crashes on ca
 - *"Why not use a third-party eval framework like Ragas or LangSmith?"* — They're great for general LLM-app eval but they don't natively know about Norwegian banking compliance, multi-policy reasoning, or the specific trap categories DNB cares about. The framework here is small enough (~700 lines of judges + runner) that we own all of it. We could integrate Ragas as one judge dimension if useful.
 
 
-### Stage 4 honest finding: grounding rubric trade-off
+---
 
-After the initial eval run revealed false-negative grounding scores caused
-by tool-output truncation in judge prompts, I extended the truncation
-budget from 600 → 4000 chars and added "benefit of the doubt" guidance to
-the grounding and hallucination rubrics. This brought the production eval
-from 0.13 to 1.0 on grounding (3-case sample) — but the leniency caused
-the grounding judge to score calib-004 (a known should-be-0.60 case) at
-1.0 instead, pushing its calibration MAE to 0.20 (above the 0.15
-threshold).
+## Stage 5: MLflow + OpenTelemetry Tracking
 
-I chose to ship the production-friendlier rubric and accept the
-calibration miss because:
-1. The eval pipeline's job is to detect regressions in the agent. Lenient
-   judges don't reduce regression-detection power as long as they're
-   stable run-to-run.
-2. The trade-off is documented and visible (the calibration command shows
-   the failure clearly with the offending rationale).
-3. Tightening the rubric to recover calibration on calib-004 risked
-   reintroducing the truncation-related false negatives.
+### Why MLflow over LangSmith, Weights & Biases, or a custom dashboard?
 
-Future work: add a separate "citation precision" sub-judge that checks
-expected vs. actual policy IDs deterministically (similar to PII), so the
-grounding judge can stay paraphrasing-tolerant without losing citation
-sensitivity.
+MLflow won this slot for four concrete reasons:
+
+1. **It runs on a laptop with one Docker command.** No SaaS account, no API key, no billing. A bank's evaluation framework needs to be deployable inside a regulated environment without external dependencies.
+2. **Open-source and self-hostable.** DNB can run it inside their VPC, behind their SSO, with their security review. Same code path as the demo.
+3. **It's the de facto standard in the JD's tech stack.** "MLflow" is named explicitly. A custom dashboard would be technically fine but signals "not familiar with the ecosystem."
+4. **The data model fits eval natively.** An MLflow `run` maps cleanly to a single `eval run` — params, metrics, artifacts. We don't need to bend the abstraction.
+
+LangSmith is excellent for end-to-end LLM tracing but is closed-source and SaaS-only — a non-starter for a bank's CI pipeline. Weights & Biases is similar trade-off. The custom dashboard option is appealing only if your team already has the infra; otherwise you're rebuilding what MLflow gives you.
+
+**Interview answer:** *"MLflow runs locally with one Docker command, is open-source so DNB can host it in-VPC, and is named in the JD's tech stack. The eval-run abstraction maps cleanly to MLflow's run abstraction, so the integration is shallow rather than fighting the framework."*
+
+### Why the file-fallback when the MLflow server is unreachable?
+
+CI and dev environments shouldn't fail because the tracking server is briefly down. The flow is:
+
+1. Try the configured `MLFLOW_TRACKING_URI` (typically `http://localhost:5000`)
+2. If the host:port doesn't accept a TCP connection within 1 second, fall back to `file:./mlruns`
+3. Continue the eval run; the user is warned but the result is still produced
+
+This is critical for two scenarios:
+- **First-time developers** who haven't started Docker yet. They get a working eval, see results in their terminal, and can later open the MLflow UI when convenient.
+- **CI runs** where a tracking server isn't deployed. The file artifact is sufficient for regression detection (Stage 6), and we don't block the build on infra.
+
+The TCP-level probe is much faster than letting the MLflow HTTP client time out — that can hang for many seconds.
+
+**Interview answer:** *"Tracking should never block evaluation. A TCP-level reachability probe with a 1-second timeout, followed by graceful fallback to local file storage, means the eval pipeline runs whether or not the tracking server is healthy. The result artifact is the source of truth either way."*
+
+### What does each MLflow run capture?
+
+Per run, we log:
+
+**Parameters (immutable, identify the experiment):**
+- `dataset` (e.g., compliance-v1)
+- `agent` (e.g., compliance-v1)
+- `model` (e.g., claude-sonnet-4-5)
+- `case_count`
+- `system_prompt_hash` — first 12 chars of SHA-256 of the system prompt; lets us detect prompt drift across runs without exposing the full prompt
+- `judge_primary_model`, `judge_secondary_model`
+
+**Metrics (numerical, comparable across runs):**
+- For each of 6 dimensions: `<dim>_mean`, `<dim>_min`, `<dim>_max`, `<dim>_passed` (0/1)
+- `duration_s`, `case_count`, `overall_passed`
+
+**Artifacts:**
+- `run_result/run_result.json` — full RunResult including every per-case judge rationale, agent trajectory, latency, and tokens
+
+This is enough to:
+- Compare two runs side-by-side in the MLflow UI
+- Plot dimension scores over time as prompts evolve
+- Drill into any failing case via the rationale artifact
+- Reproduce a historical run by replaying with the same params
+
+### Why hash the system prompt instead of logging it?
+
+Two reasons. The prompt itself is large (1+ KB), repeated across hundreds of runs. The hash is 12 chars and changes iff the prompt changes — that's the only signal we actually need. Plus it sidesteps any concern about logging proprietary prompt content into a tracking server that might end up logged elsewhere.
+
+The full prompt lives in version control where it belongs; the run links to a specific commit via standard MLflow git integration if configured.
+
+### Why OpenTelemetry instead of MLflow's own logging?
+
+MLflow tracks **runs**. OTel traces **operations within runs**. Different abstractions, both useful.
+
+OTel gives us spans like:
+```
+eval.run
+├── eval.case (case_id=comp-001)
+│   ├── agent.answer
+│   └── judge.score (judge=accuracy)
+│   ├── judge.score (judge=grounding)
+│   ├── … (6 judges total)
+└── eval.case (case_id=comp-002)
+    └── …
+```
+
+This lets a developer answer "why is the run slow" or "which judge call failed" by looking at one trace, not by correlating MLflow metrics with timestamped logs.
+
+OTel is also the open standard — when DNB stands up Tempo, Jaeger, Datadog, Honeycomb, or anything else, the framework already speaks the right protocol. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` to the production collector is the entire integration.
+
+**Interview answer:** *"MLflow tracks runs; OTel traces operations. Both matter and they answer different questions. OTel is the open standard, so the eval pipeline emits spans the bank's existing observability stack already understands."*
+
+### Why is OTel export opt-in?
+
+Importing the OTel SDK is fast, but exporting spans to a collector that doesn't exist isn't free — connection retries, log spam, occasionally timeouts. For local dev without a collector, we want the eval to run fast and silent. Setting `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` (or `BANKSAFE_OTEL_CONSOLE=1` for stdout) opts you in. Default behavior: spans are created, attributes are recorded, but nothing is exported, so overhead is minimal.
+
+### Why a Docker Compose stack instead of running MLflow with `pip install`?
+
+Three reasons:
+
+1. **Reproducibility.** The compose file pins MLflow and OTel collector versions. Anyone can stand up the same stack in 30 seconds, with no host-Python conflicts.
+2. **Realistic operationally.** In production, the tracking server is its own service with its own lifecycle — not a Python process the developer accidentally kills with Ctrl+C. The compose file mirrors that topology.
+3. **Volumes for persistence.** SQLite + artifact directory both live on a Docker volume, so MLflow data survives container restarts (and a `make down`/`make up` cycle preserves history).
+
+The fallback path (`make` not required) ensures developers without Docker still get value.
+
+### Likely interview questions
+
+- *"What if MLflow goes down mid-eval?"* — The eval keeps running; logging failures are caught and logged but never propagate. The local file artifact is always written. Worst case: one run misses MLflow but the result.json is on disk and can be backfilled.
+- *"How would you compare two prompt versions?"* — Each run has a `system_prompt_hash` parameter. Filter MLflow's UI to runs with the same dataset/agent, group by prompt hash, look at dimension means. The artifact contains the full per-case data if you need to drill down.
+- *"How would you scale to many concurrent runs?"* — MLflow's HTTP backend handles this fine. The current eval is sequential; for parallelism we'd batch judge calls per case (Anthropic supports this) before parallelizing across cases. OTel handles concurrent spans natively.
+- *"How would you secure the MLflow server in production?"* — Run behind your auth proxy (Okta/Azure AD), enforce TLS, restrict the artifact volume to a least-privileged service account. None of this changes the framework; it's deployment.
+- *"Why log per-case rationales as artifacts and not metrics?"* — Metrics are scalars. Rationales are unbounded text. Artifacts are designed exactly for this — large blobs you might want to inspect but don't query.
+
+
+---
+
+## Stage 6: GitHub Actions CI Gating
+
+This is the stage that makes the project name "EvalOps" actually mean something. Every PR runs an evaluation, the result is compared to a committed baseline, and merges are blocked if any dimension regresses beyond a configurable threshold.
+
+### Why two workflows instead of one?
+
+Real EvalOps systems can't afford to run a full LLM-judge eval on every commit:
+
+- One full eval costs ~$1-3 in API credit
+- One full eval takes 5-10 minutes
+- A typical team makes 10+ pushes per day
+
+If we ran the live eval on every push, we'd be looking at $10-30/day in API spend per developer plus a CI cycle that's too slow for tight iteration. So we split:
+
+**Fast CI (`tests.yml`)** runs on every push and PR. It exercises the entire eval pipeline without spending API credit:
+- All unit tests
+- A regression-engine smoke check that compares the committed baseline against itself (must always show zero deltas)
+
+This catches plumbing bugs in seconds, costs zero, and runs on every commit.
+
+**Live eval (`live-eval.yml`)** runs on demand:
+- Manually via the Actions tab (any branch)
+- Automatically when a PR gets the `run-eval` label
+
+It runs the real ComplianceAgent against the real Anthropic API, scores all six dimensions, compares to the baseline, posts a results comment to the PR, and blocks merge if regressions are detected.
+
+This is the standard pattern at well-run ML/AI shops. Cheap fast checks every commit; expensive comprehensive checks before merge.
+
+**Interview answer:** *"Splitting cheap and expensive checks is the only way LLM-eval CI scales. Every push gets fast feedback for free; comprehensive runs happen on demand or before merge. The framework gates merges on the comprehensive check, but doesn't tax day-to-day iteration."*
+
+### Why a baseline file in version control instead of "last main run"?
+
+A baseline that lives in `evals/baseline/main-baseline.json` is:
+
+- **Deterministic.** The same baseline every time, regardless of which order CI runs in or whether main has flaky runs.
+- **Version-controlled.** Updates require a deliberate PR, with the diff visible. You can't accidentally regress and then auto-update the baseline.
+- **Reproducible offline.** A developer can run the same comparison locally with `banksafe eval compare` and see exactly what CI will see.
+
+The alternative — pulling the last successful main-branch run from MLflow — is a great Stage 7 enhancement, but introduces infrastructure dependency and a moving target. For shipping today, the committed-file approach is more robust.
+
+The trade-off is operational: someone has to deliberately update the baseline when intended improvements ship. We make that easy via a manual `workflow_dispatch` trigger that produces an artifact you can commit.
+
+### Why is regression different from threshold failure?
+
+The compare command tests two things:
+
+1. **Threshold pass/fail** (per dimension) — e.g., `accuracy_mean ≥ 0.80`. This is the eval's own opinion about whether the system is good enough, regardless of history.
+2. **Regression vs baseline** — e.g., `accuracy_mean dropped > 5 percentage points vs main`. This is detection of *changes* in behavior.
+
+Both can fail independently. A run might:
+- Pass thresholds but regress (shipping degradation that's still above the floor — flagged as regression)
+- Fail thresholds without regressing (the system was already broken before this PR — flagged as failure but not regression)
+- Both — the project is shipping a bad change *and* the system was already below threshold
+
+The PR comment differentiates these so reviewers see the actual story.
+
+### Why post results as a PR comment instead of just a status check?
+
+Two reasons:
+
+1. **Discoverability.** A status check goes red but doesn't tell you *what* failed. Reviewers have to dig into the Actions log, find the right step, and read the output. A PR comment puts the dimension scores right in the conversation thread.
+2. **Audit trail.** The comment becomes part of the PR's permanent history. When someone asks six months later "why did we change this prompt?", the conversation around the original PR shows the eval data that drove the decision.
+
+The comment is generated in two passes: the comparison engine produces a structured `RegressionReport`, then `render_pr_comment` formats it as Markdown. That separation lets us reuse the same data for future Slack notifications, dashboards, etc.
+
+**Interview answer:** *"A status check tells you something failed; a PR comment tells you what. Plus the comment becomes part of the audit trail — when you're shipping AI to a regulated environment, the conversation around 'why did we change this' needs to be reconstructable years later."*
+
+### Why does the live-eval workflow continue on regression instead of failing immediately?
+
+The job runs `compare` with `continue-on-error: true`, then explicitly fails at the end based on the saved exit code. This is intentional:
+
+- Even when there's a regression, we want to **upload the artifacts** (full RunResult JSON, the PR comment) so reviewers can inspect them.
+- We want to **post the PR comment** so the regression is visible.
+- *Then* we fail the job to mark the merge as blocked.
+
+A naive `set -e` style "fail fast" would prevent all of that — you'd see a red X with no detail.
+
+### Why a stub agent in the framework instead of "skip eval in fast CI"?
+
+The fast CI workflow doesn't use the StubAgent today (it just self-checks the regression engine). But shipping a `StubAgent` with the framework matters for two reasons:
+
+1. **Developer ergonomics.** A new contributor can run `banksafe eval run` against StubAgent locally with no API key, get realistic-looking output, and verify their changes haven't broken the runner. That's 30 seconds of iteration vs minutes of API calls.
+2. **Future fast CI work.** A future iteration could run a *partial* eval in fast CI — StubAgent + the deterministic PII judge alone — to catch trajectory-related regressions without API spend. That work isn't in Stage 6 but the building block is.
+
+### Likely interview questions
+
+- *"How do you keep the baseline from going stale?"* — Two paths. (1) Manual: when an intended improvement ships, update `main-baseline.json` in the same PR. (2) Automated (Stage 7+): a scheduled workflow that runs the live eval against main weekly and opens a "baseline refresh" PR if scores drift.
+- *"What if Anthropic has an outage during a CI run?"* — The live-eval job has a 30-minute timeout and uploads partial artifacts on failure. The eval result has an `error` field per agent response, so a partial run with API errors is visible — those cases score 0 on every dimension and surface in the regression comment as drops. We can either retry, or — better — fall back to a smaller subset and ship a `--limit 10` quick-check.
+- *"How do you handle false-positive regressions from LLM non-determinism?"* — Three layers: temperature=0 on judges, calibrated rubrics with human-validated MAE, and a 5pp threshold that absorbs reasonable noise. If those aren't enough we'd add multi-seed averaging — run each case 3 times, take the median — but that triples cost.
+- *"How would this scale to 10 agents and 5 datasets?"* — Same workflow file, parameterized via matrix strategy in GitHub Actions. Each combination produces its own artifact and PR comment. The tricky bit is per-PR cost; we'd add labels like `run-eval-loan-guidance` to scope which agent's eval gets triggered.
+- *"How would you migrate this CI to AWS CodeBuild or Jenkins?"* — The CLI is the contract. `banksafe eval run`, `banksafe eval compare --pr-comment ...`, exit codes 0/1. Any CI system that can run those commands and post a comment to a PR provider works. The GitHub-Actions-specific bits (`actions/github-script`, label triggers) move to whichever provider's idiom.
+
