@@ -208,7 +208,7 @@ This project itself was built using AI-assisted engineering — Claude (via Clau
 - [x] Stage 4: LLM-as-judge pipeline + calibration
 - [ ] Stage 5: MLflow + OTel integration *(deferred — framework runs without it)*
 - [x] Stage 6: GitHub Actions CI gating
-- [ ] Stage 7: Documentation & demo polish
+- [x] Stage 7: Documentation & demo polish
 
 ## License
 
