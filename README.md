@@ -2,9 +2,9 @@
 
 > CI/CD evaluation framework for agentic banking assistants. Catches quality, safety, and compliance regressions *before* they reach production.
 
+[![Tests](https://github.com/dallarsen/banksafe-evalops/actions/workflows/tests.yml/badge.svg)](https://github.com/dallarsen/banksafe-evalops/actions/workflows/tests.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Built with Claude](https://img.shields.io/badge/Built_with-Claude-orange.svg)](https://www.anthropic.com/claude)
 
 ---
 
@@ -24,11 +24,10 @@ Manual QA doesn't scale. Generic LLM eval frameworks don't understand banking co
 
 A reusable evaluation platform that:
 
-1. **Runs multi-dimensional LLM-as-judge evaluation** on agentic banking assistants — accuracy, citation grounding, hallucination, PII leakage, refusal appropriateness, tone
-2. **Calibrates judges** against a small human-labeled golden set to validate consistency before trusting them
-3. **Tracks every experiment in MLflow** — prompts, models, datasets, metrics, and judge artifacts
-4. **Integrates with GitHub Actions** to automatically detect regressions on every pull request, comment results inline, and *block merges* when critical thresholds are breached
-5. **Emits OpenTelemetry traces** for end-to-end observability into agent and judge behavior
+1. **Runs multi-dimensional evaluation** on agentic banking assistants — accuracy, citation grounding, hallucination, PII leakage, refusal appropriateness, tone (5 LLM-based judges + 1 deterministic regex judge)
+2. **Calibrates judges** against a hand-labeled golden set to validate rubric consistency before trusting them in CI (MAE ≤ 0.15)
+3. **Compares runs against a versioned baseline** to detect regressions and emit Markdown PR comments
+4. **Integrates with GitHub Actions** to automatically run the eval on labeled PRs, comment results inline, and *block merges* when critical thresholds are breached
 
 The reference implementation evaluates an **Internal Compliance Assistant** — a Strands-based agent that answers DNB-internal questions about Norwegian banking regulations (GDPR, DORA, AML, MiFID II, PSD2) using a mock policy retrieval tool. The framework is designed to extend to other agent types (customer support, loan guidance, fraud triage) by adding a config and a dataset.
 
@@ -40,13 +39,11 @@ flowchart LR
     CI --> Eval[Eval Runner]
     Eval --> Agent[Compliance Agent<br/>Strands + Anthropic]
     Agent --> Tools[Mock Policy<br/>Lookup Tool]
-    Eval --> Judges[LLM-as-Judge<br/>Multi-dimensional]
+    Eval --> Judges[6-judge stack<br/>5 LLM + 1 regex]
     Judges --> Calibrate[Calibration<br/>Harness]
-    Eval --> MLflow[(MLflow<br/>Tracking)]
-    Eval --> OTel[(OTel Traces)]
-    Eval --> Gate{Regression<br/>Detected?}
-    Gate -- Yes --> Block[Block PR]
-    Gate -- No --> Pass[Allow Merge]
+    Eval --> Compare{Compare to<br/>baseline}
+    Compare -- regression --> Block[❌ Block PR<br/>+ comment]
+    Compare -- no regression --> Pass[✅ Allow merge<br/>+ comment]
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for component details.
@@ -155,17 +152,18 @@ banksafe-evalops/
 ├── src/banksafe/
 │   ├── agents/          # Strands-based banking agents + base interface
 │   ├── tools/           # Mock internal tools (policy lookup, etc.)
-│   ├── judges/          # LLM-as-judge evaluators (Stage 4)
+│   ├── judges/          # LLM judges (5 LLM + 1 deterministic regex)
 │   ├── datasets/        # Eval dataset loaders & shared schema
-│   ├── tracking/        # MLflow + OTel integration (Stage 5)
+│   ├── eval/            # Orchestrator + regression-comparison engine
 │   └── cli.py           # banksafe command-line entry point
 ├── data/
 │   ├── policies/        # Synthetic regulatory documents (GDPR, DORA, AML, …)
-│   └── eval_sets/       # Versioned evaluation datasets (Stage 3)
-├── evals/               # Eval runner & demo scripts
-├── docker/              # MLflow + OTel collector compose (Stage 5)
-├── .github/workflows/   # CI/CD evaluation pipeline (Stage 6)
-├── docs/                # Architecture, extension guide, study guide
+│   ├── eval_sets/       # Versioned evaluation datasets
+│   └── calibration/     # Hand-labeled golden set for judge calibration
+├── evals/
+│   └── baseline/        # Committed baseline for CI regression checks
+├── .github/workflows/   # tests.yml + live-eval.yml
+├── docs/                # Architecture, extension guide, study guide, email + article
 └── tests/
 ```
 
@@ -174,11 +172,11 @@ banksafe-evalops/
 | Feature | Implementation |
 |---|---|
 | Multi-dimensional eval | Accuracy, grounding, hallucination, PII, refusal, tone |
-| Judge calibration | Cross-model + human golden-set validation |
-| Experiment tracking | MLflow with runs, params, metrics, artifacts |
-| Observability | OpenTelemetry traces for agent + judge calls |
+| Judge calibration | Hand-labeled golden set; MAE ≤ 0.15 threshold |
+| Regression detection | Per-dimension delta vs. committed baseline (default 5pp) |
 | CI/CD gating | GitHub Actions with PR comments + merge blocking |
-| Reproducibility | Docker-composed MLflow & collector |
+| Cost-aware CI | Fast workflow on every push (free); live workflow on label (~$2) |
+| Provider-agnostic | `BaseAgent` interface portable to AWS Bedrock or any LLM |
 | Extensibility | Add a new agent in <1 day via config + dataset |
 
 ## Extending to Other Agents
@@ -194,9 +192,9 @@ See [`docs/extending.md`](docs/extending.md) for a full walkthrough.
 
 ## Tech Stack
 
-**Python · Strands · Anthropic API · MLflow · OpenTelemetry · Docker · GitHub Actions · Pydantic**
+**Python · Strands · Anthropic API · GitHub Actions · Pydantic · Pytest**
 
-Designed to be portable to AWS Bedrock + AgentCore by swapping the model provider in `src/banksafe/agents/` (the `BaseAgent` interface is provider-agnostic).
+Designed to be portable to AWS Bedrock + AgentCore by swapping the model provider in `src/banksafe/agents/` (the `BaseAgent` interface is provider-agnostic). MLflow + OpenTelemetry integration is on the roadmap but intentionally not required — the framework runs end-to-end with just an Anthropic API key.
 
 ## Built with AI-First Engineering
 

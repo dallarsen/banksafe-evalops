@@ -1,177 +1,148 @@
-# Setup Instructions — Stage 6 Update
+# Setup Instructions — Stage 7 (Final Polish)
 
-This is the showpiece stage. **GitHub Actions CI** that runs your eval pipeline on every PR, compares scores against a committed baseline, posts a results table as a PR comment, and blocks merges when regressions are detected.
-
-This is the single most impressive piece for the email to hiring managers. It turns "I built an eval framework" into "I built an EvalOps framework that gates production deployments."
+This is the last stage. **No new code.** Just polished docs and the materials you need to send the project to hiring managers.
 
 ---
 
 ## What this stage adds
 
-- `src/banksafe/eval/regression.py` — comparison engine producing structured `RegressionReport`s
-- `src/banksafe/agents/stub.py` — deterministic stub agent for cheap CI
-- `evals/baseline/main-baseline.json` — synthetic baseline for the regression check
-- `.github/workflows/tests.yml` — fast CI (every push, free)
-- `.github/workflows/live-eval.yml` — full-eval CI (manual or `run-eval` label, ~$2/run)
-- New CLI command: `banksafe eval compare`
-- 7 new tests (47 total now)
-- Stage 6 entry in study guide
-- Version bump 0.4.0 → 0.6.0 (we're skipping 0.5 since Stage 5 was deferred)
+- **`docs/email-draft.md`** — two ready-to-send email variants to hiring managers
+- **`docs/medium-article.md`** — a 1500-word LinkedIn/Medium article version
+- **`docs/demo-script.md`** — 3-minute Loom video script (recording is optional)
+- **`docs/architecture.md`** — fully refreshed to reflect what actually shipped
+- **`docs/extending.md`** — refreshed with a worked Loan Guidance example
+- **README final pass** — accurate tech stack, accurate diagram, no aspirational claims about MLflow
+- **Version bump 0.6.0 → 0.7.0** to mark the polished release
 
 ---
 
 ## How to apply
 
-### 1. Unzip Stage 6 over your existing folder
+### 1. Unzip Stage 7 over your existing folder
 
 ```bash
 cd ~/Desktop
-unzip -o ~/Downloads/banksafe-evalops-stage6.zip -d ~/Desktop/
+unzip -o ~/Downloads/banksafe-evalops-stage7.zip -d ~/Desktop/
 ```
 
-### 2. Verify version
+### 2. Verify version and tests still pass
 
 ```bash
 cd ~/Desktop/banksafe-evalops
-grep "^version" pyproject.toml
-```
-
-Must show `version = "0.6.0"`.
-
-### 3. Reinstall
-
-```bash
 . .venv/bin/activate
 pip install -e ".[dev]"
-banksafe version
-```
-
-Should print `banksafe-evalops 0.6.0`.
-
-### 4. Run the tests
-
-```bash
+banksafe version       # → 0.7.0
 python -m pytest tests/ -v
 ```
 
-You should see **47 passed**. Seven new tests verify the regression-comparison engine and PR-comment renderer.
+Should still show **47 passed**. No code changed; this is sanity check only.
 
-### 5. Try the new `banksafe eval compare` command locally ⭐
+### 3. Read the email draft and customize it ⭐
+
+Open `docs/email-draft.md` and:
+- Pick Variant A (direct) or Variant B (lighter touch) — **A is recommended**
+- Replace `[Name]` with the actual hiring manager's name (find on LinkedIn, or use "AI Tech team")
+- Replace `[your phone]` and `[your LinkedIn]` with your actual details
+- Trim if needed — under 200 words is the goal
+- **Don't send yet.** Sleep on it. Send tomorrow morning Oslo time.
+
+### 4. Take the screenshots ⭐
+
+The email links the repo, but screenshots make the email impossible to ignore. You need three:
+
+1. **Eval run passing** — your terminal from earlier today showing `Overall: PASSED` with the dimension scores table
+2. **Regression detection working** — the side-by-side from your Stage 6 verification (identity check + simulated regression)
+3. **Green CI** — the GitHub Actions page showing your "Tests & fast checks" workflow with the green checkmark
+
+Save them to your desktop or wherever you'll attach them from.
+
+If you didn't keep the terminal output from the earlier eval run, just rerun:
 
 ```bash
-# Simulate what CI does — copy the baseline as if it were the current run
-mkdir -p evals/output
-cp evals/baseline/main-baseline.json evals/output/last_run.json
-
-# Compare current vs baseline (should be all flat, exit code 0)
-banksafe eval compare
+banksafe eval run --limit 3
 ```
 
-You should see a comparison table with all dimensions showing `+0.000` and "No regressions detected." Exit code is 0.
+### 5. (Optional, ~$2) Trigger the live-eval workflow on a demo PR
 
-Now simulate a regression — drop the accuracy score:
+This produces the killer screenshot — a PR with an auto-posted regression-table comment.
 
 ```bash
-python -c "
-import json
-data = json.load(open('evals/output/last_run.json'))
-for s in data['dimension_summaries']:
-    if s['dimension'] == 'accuracy':
-        s['mean_score'] = 0.65
-        s['passed'] = False
-data['overall_passed'] = False
-json.dump(data, open('evals/output/last_run.json', 'w'), indent=2)
-"
-
-banksafe eval compare
-echo "exit code: $?"
+git checkout -b demo-pr
+echo "" >> README.md
+git add README.md
+git commit -m "demo: trigger live eval"
+git push -u origin demo-pr
 ```
 
-You should see `accuracy` flagged as `REGRESSION` with `Δ = -0.270`, and exit code 1. **This is exactly what CI uses to block the merge.**
+Then on GitHub:
+1. Open https://github.com/dallarsen/banksafe-evalops/pulls
+2. Click "Compare & pull request" for the `demo-pr` branch
+3. Add the label `run-eval` (you may need to create the label first)
+4. Wait ~5-10 min
+5. The workflow runs, posts a comment with the full regression table
 
-Restore the baseline before continuing:
+Take a screenshot of the PR with the comment visible. Close the PR without merging.
+
+### 6. (Optional) Record the Loom
+
+`docs/demo-script.md` has a 3-minute script. Recording is optional; the email + repo + screenshots are sufficient.
+
+If you do record: **don't perfectionist it.** A genuine 3-minute walkthrough beats a polished one. The hiring manager will tell.
+
+### 7. (Optional) Publish the article
+
+`docs/medium-article.md` is a 1500-word LinkedIn / Medium post. Posting is optional — it adds a public signal, but isn't required for the email.
+
+If you post: link to it from your LinkedIn profile and mention it in the email's P.S. line.
+
+### 8. Commit and push the final polish
 
 ```bash
-cp evals/baseline/main-baseline.json evals/output/last_run.json
-```
-
-### 6. Add your Anthropic API key as a GitHub Secret ⭐
-
-This is required for the `live-eval.yml` workflow to actually run.
-
-1. Go to https://github.com/dallarsen/banksafe-evalops/settings/secrets/actions
-2. Click **"New repository secret"**
-3. **Name:** `ANTHROPIC_API_KEY`
-4. **Secret:** paste your real Anthropic API key (the same one in your `.env`)
-5. Click **"Add secret"**
-
-You'll see the secret listed but its value is hidden — that's correct.
-
-### 7. Commit and push
-
-```bash
-git add src/banksafe/eval/regression.py src/banksafe/agents/stub.py src/banksafe/agents/__init__.py src/banksafe/cli.py src/banksafe/eval/__init__.py src/banksafe/eval/runner.py evals/baseline/ tests/test_regression.py
-git commit -m "feat(stage-6): add regression-comparison engine and CI workflows"
-
-git add .github/workflows/tests.yml .github/workflows/live-eval.yml docs/study-guide.md README.md pyproject.toml src/banksafe/__init__.py SETUP.md
-git commit -m "ci: add tests + live-eval workflows with PR-comment regression gating"
+git add docs/email-draft.md docs/medium-article.md docs/demo-script.md docs/architecture.md docs/extending.md README.md pyproject.toml src/banksafe/__init__.py SETUP.md
+git commit -m "docs(stage-7): final polish — email draft, article, demo script, refreshed architecture"
 
 git push
 ```
 
-### 8. Watch CI run ⭐
+### 9. Final repo check
 
-Open https://github.com/dallarsen/banksafe-evalops/actions
+Open https://github.com/dallarsen/banksafe-evalops one more time:
+- README renders cleanly
+- Architecture diagram displays
+- The green CI badge at the top is green
+- 11+ commits in history showing intentional iteration
 
-You should see **"Tests & fast checks"** run on your push. It should complete in under 2 minutes with a green checkmark. **Take a screenshot of this** — green CI on a project with judges, calibration, and regression detection is the screenshot that goes in your hiring-manager email.
-
-### 9. (Optional) Trigger the live eval ⭐
-
-If you want to see the full thing in action — the live-eval workflow running the real evaluation against the real Anthropic API and posting a comment to a PR:
-
-1. Create a new branch with a small change:
-   ```bash
-   git checkout -b demo-pr
-   echo "" >> README.md
-   git add README.md
-   git commit -m "demo: trigger live eval"
-   git push -u origin demo-pr
-   ```
-2. Open https://github.com/dallarsen/banksafe-evalops/pulls and create a PR from `demo-pr` to `main`
-3. Add the label `run-eval` to the PR
-4. Wait ~5-10 minutes
-5. The workflow runs, posts a comment with the full regression table
-
-This costs ~$2 of API credit. **The PR comment that lands is the second key screenshot for your email.** Once it's done, close the PR without merging (it was just a demo).
+Take a screenshot of the repo home page. **This is the screenshot you might pin to the top of the email.**
 
 ---
 
-## What just got real
+## Sending the email — checklist
 
-You now have **production-grade CI gating** for an LLM-based system:
+When you're ready to send (tomorrow morning, Oslo time, between 8-10am their time):
 
-- Every push runs unit tests + a self-check of the regression engine (free, fast)
-- PRs labeled `run-eval` get a full live evaluation with PR comment
-- Regressions beyond 5pp on any dimension automatically block merges
-- The baseline is version-controlled so updates require deliberate review
+- [ ] Subject line is direct and specific
+- [ ] Body is under 200 words
+- [ ] Three screenshots attached (or four if you got the live-eval comment)
+- [ ] Repo link is correct
+- [ ] Your name, phone, LinkedIn at the bottom
+- [ ] Sent to the actual hiring manager (LinkedIn search "DNB AI Tech")
+- [ ] No typos in the recipient's name (this is the easiest unforced error)
+- [ ] You read the whole email out loud once before hitting send
 
-The framework is now genuinely an *EvalOps* system, not just an evaluation library.
+Then send it.
 
 ---
 
-## Reply when done
+## After sending
 
-Reply with:
-- **"Stage 6 done"** + (ideally) screenshots of green CI and any PR comment → final stage (Stage 7: polish + Medium article + email draft)
-- **"CI failed: [paste the actions log]"** → I'll debug
+- **Do not refresh your inbox every 5 minutes.** Norwegians take their time. A reply may take 3-7 business days.
+- **One follow-up after 7 days max.** One line, friendly. Then leave it.
+- **In the meantime, apply elsewhere.** A great project + a great cover letter can be sent to multiple companies. Don't put all your hope on one inbox.
 
-If you want to stop here and ship the email tomorrow, what you have right now is genuinely impressive:
-- Working compliance agent
-- 32-case eval dataset
-- 6 calibrated judges
-- 47 tests passing
-- CI/CD with regression gating
-- ~$3-5 of API credit spent
-- Demonstrated and documented
+---
 
-That's a portfolio piece. Stage 7 just makes it shine.
+## What you built tonight
+
+In one extended session, you went from "I'd like to apply for an AI eval engineering role" to having a public, MIT-licensed, CI-tested, calibrated, multi-dimensional evaluation framework with regression detection and PR-comment automation, plus a full study guide explaining every design decision, plus polished email and article drafts.
+
+That's a lot. Be proud of it. Get some sleep. Send the email when you're sharp. Good luck.
