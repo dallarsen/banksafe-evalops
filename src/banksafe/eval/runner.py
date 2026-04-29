@@ -1,18 +1,4 @@
-"""Evaluation orchestrator — runs cases through agent + judges and aggregates.
-
-This is the heart of the eval pipeline. Given an `EvalCase` dataset and a
-list of judges, it:
-
-  1. Runs each case through the agent (capturing trajectory).
-  2. Runs every judge against every (case, response) pair.
-  3. Aggregates per-dimension scores and pass/fail counts.
-  4. Returns a `RunResult` that can be persisted, compared against a
-     baseline, or rendered to a CLI table.
-
-The orchestrator is intentionally provider-agnostic: it takes a `BaseAgent`
-and a list of `BaseJudge` instances. Stage 5 will plug MLflow tracking
-around it; Stage 6 will wire it into CI.
-"""
+"""Evaluation orchestrator — runs cases through agent + judges and aggregates."""
 
 from __future__ import annotations
 
@@ -31,8 +17,7 @@ from banksafe.judges import build_default_judges
 from banksafe.judges.base import BaseJudge, JudgeResult
 
 # Per-dimension fail thresholds. A run "passes" a dimension if the mean score
-# is at or above this value. These are tunable via configs/<agent>.yaml in
-# Stage 6; defaults are reasonable for the compliance agent.
+# is at or above this value.
 DEFAULT_FAIL_THRESHOLDS: dict[str, float] = {
     "accuracy": 0.80,
     "grounding": 0.85,
@@ -44,8 +29,6 @@ DEFAULT_FAIL_THRESHOLDS: dict[str, float] = {
 
 
 class CaseResult(BaseModel):
-    """One case run through the agent and every judge."""
-
     case_id: str
     category: str
     trap_type: str | None
@@ -55,8 +38,6 @@ class CaseResult(BaseModel):
 
 
 class DimensionSummary(BaseModel):
-    """Aggregated scoring for one dimension across all cases."""
-
     dimension: str
     mean_score: float
     min_score: float
@@ -67,8 +48,6 @@ class DimensionSummary(BaseModel):
 
 
 class RunResult(BaseModel):
-    """Complete output of one evaluation run."""
-
     dataset: str
     agent_name: str
     agent_model: str
@@ -89,16 +68,7 @@ def run_evaluation(
     fail_thresholds: dict[str, float] | None = None,
     progress_callback=None,
 ) -> RunResult:
-    """Run an evaluation: (cases × agent × judges) -> RunResult.
-
-    Args:
-        cases: iterable of EvalCase to run.
-        agent: the agent under test.
-        judges: list of judges (defaults to the canonical 6).
-        dataset_name: label used in the result for tracking.
-        fail_thresholds: per-dimension thresholds; falls back to defaults.
-        progress_callback: optional fn(case_index, total, case) for UI updates.
-    """
+    """Run an evaluation: (cases × agent × judges) -> RunResult."""
     case_list = list(cases)
     judge_list = judges if judges is not None else build_default_judges()
     thresholds = {**DEFAULT_FAIL_THRESHOLDS, **(fail_thresholds or {})}
@@ -161,8 +131,6 @@ def _summarize_dimensions(
     for cr in case_results:
         for jr in cr.judge_results:
             if jr.error:
-                # Treat judge errors as 0.0 — visible failure is better than
-                # silently dropping samples.
                 by_dim.setdefault(jr.dimension, []).append(0.0)
             else:
                 by_dim.setdefault(jr.dimension, []).append(jr.score)
@@ -188,7 +156,7 @@ def _summarize_dimensions(
 
 
 def save_run_result(result: RunResult, path: Path) -> None:
-    """Persist a RunResult as JSON for later comparison or CI artifact upload."""
+    """Persist a RunResult as JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
 

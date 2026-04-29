@@ -22,7 +22,7 @@ agent_app = typer.Typer(
 )
 eval_app = typer.Typer(
     name="eval",
-    help="Inspect, run, and calibrate evaluations.",
+    help="Inspect, run, calibrate, and compare evaluations.",
     no_args_is_help=True,
 )
 app.add_typer(agent_app)
@@ -141,7 +141,7 @@ def eval_cases(
 
 
 # ---------------------------------------------------------------------------
-# eval — run + calibrate (Stage 4)
+# eval — run + calibrate
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +233,6 @@ def eval_calibrate(
 
     console.print(table)
 
-    # Show worst-case disagreements per dimension
     for dim, report in reports.items():
         worst = sorted(report.deltas, key=lambda d: -abs(d.delta))[:1]
         for d in worst:
@@ -247,6 +246,74 @@ def eval_calibrate(
                     console.print(f"  [dim]judge said:[/dim] {d.rationale[:200]}")
 
     if any_uncalibrated:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# eval — Stage 6: regression detection (compare current run to baseline)
+# ---------------------------------------------------------------------------
+
+
+@eval_app.command("compare")
+def eval_compare(
+    current: Path = typer.Option(
+        Path("evals/output/last_run.json"),
+        "--current",
+        "-c",
+        help="Path to current run result JSON.",
+    ),
+    baseline: Path = typer.Option(
+        Path("evals/baseline/main-baseline.json"),
+        "--baseline",
+        "-b",
+        help="Path to baseline run result JSON to compare against.",
+    ),
+    threshold: float = typer.Option(
+        0.05,
+        "--threshold",
+        "-t",
+        help="Maximum allowed regression per dimension (default 0.05 = 5%).",
+    ),
+    pr_comment: Path | None = typer.Option(
+        None,
+        "--pr-comment",
+        help="If set, write a Markdown PR comment summary to this path.",
+    ),
+) -> None:
+    """Compare current eval run to a baseline and detect regressions.
+
+    Exits 0 if no dimension regresses by more than `threshold`. Exits 1 if
+    any dimension regresses more, or if the current run failed any
+    threshold check at all. Designed for use as the gating step in CI.
+    """
+    from banksafe.eval.regression import compare_runs, render_comparison_table
+    from banksafe.eval import load_run_result
+
+    if not current.exists():
+        console.print(f"[red]Current run not found at {current}[/red]")
+        raise typer.Exit(code=2)
+    if not baseline.exists():
+        console.print(
+            f"[yellow]No baseline at {baseline} — skipping regression check. "
+            "Commit the current run as the baseline if it represents healthy behavior.[/yellow]"
+        )
+        # No baseline = first run. Don't fail; record current as candidate.
+        return
+
+    current_run = load_run_result(current)
+    baseline_run = load_run_result(baseline)
+    report = compare_runs(current_run, baseline_run, regression_threshold=threshold)
+
+    render_comparison_table(report, console)
+
+    if pr_comment is not None:
+        from banksafe.eval.regression import render_pr_comment
+
+        pr_comment.parent.mkdir(parents=True, exist_ok=True)
+        pr_comment.write_text(render_pr_comment(report), encoding="utf-8")
+        console.print(f"\n[dim]PR comment markdown written to {pr_comment}[/dim]")
+
+    if report.has_regressions or not current_run.overall_passed:
         raise typer.Exit(code=1)
 
 
